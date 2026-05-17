@@ -1,0 +1,7 @@
+spring:
+  application:
+    name: bookstore-saga-orchestrator-service
+
+saga:
+  payment-timeout-minutes: 15
+

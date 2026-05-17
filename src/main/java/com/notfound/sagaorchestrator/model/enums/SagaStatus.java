@@ -1,0 +1,21 @@
+package com.notfound.sagaorchestrator.model.enums;
+
+public enum SagaStatus {
+    STARTED,
+    ORDER_CREATED,
+    STOCK_RESERVED,
+    PROMOTION_RESERVED,
+    PAYMENT_PENDING,
+    PAYMENT_SKIPPED,
+    PAYMENT_COMPLETED,
+    SHIPPING_CREATED,
+    ORDER_CONFIRMED,
+    STOCK_CONFIRMED,
+    PROMOTION_CONFIRMED,
+    CART_CLEARED,
+    COMPLETED,
+    COMPENSATING,
+    FAILED,
+    EXPIRED
+}
+
