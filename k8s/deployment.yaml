@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: saga-orchestrator-service-deployment
+  labels:
+    app: saga-orchestrator-service
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: saga-orchestrator-service
+  template:
+    metadata:
+      labels:
+        app: saga-orchestrator-service
+    spec:
+      containers:
+        - name: saga-orchestrator-service
+          image: truongikpk/bookstore-saga-orchestrator-service:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+          env:
+            - name: SPRING_PROFILES_ACTIVE
+              value: "prod"
+            - name: DB_HOST
+              value: "saga-db"
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: "bookstore_saga"
+            - name: DB_USERNAME
+              value: "bookstore"
+            - name: DB_PASSWORD
+              value: "bookstore"
+            - name: RABBITMQ_HOST
+              value: "rabbitmq"
+
