@@ -7,7 +7,7 @@ import com.notfound.sagaorchestrator.model.dto.response.CheckoutSagaResponse;
 import java.util.UUID;
 
 public interface CheckoutSagaService {
-    CheckoutSagaResponse startCheckout(String userId, CheckoutRequest request);
+    CheckoutSagaResponse startCheckout(String userId, String authorization, CheckoutRequest request);
     CheckoutSagaResponse getSaga(UUID sagaId);
     void handleOrderCreated(OrderCreatedEvent event);
     void handleStockReserved(com.notfound.sagaorchestrator.messaging.message.BaseSagaMessage event);
@@ -27,4 +27,3 @@ public interface CheckoutSagaService {
     void handleOrderCancelled(com.notfound.sagaorchestrator.messaging.message.BaseSagaMessage event);
     void expirePendingPayments();
 }
-

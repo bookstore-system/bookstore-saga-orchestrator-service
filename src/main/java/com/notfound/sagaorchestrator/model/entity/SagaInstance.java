@@ -45,11 +45,17 @@ public class SagaInstance {
     @Column(name = "discount_code")
     private String discountCode;
 
+    @Column(name = "discount_amount")
+    private Double discountAmount;
+
     @Column(name = "redirect_url")
     private String redirectUrl;
 
     @Column(name = "total_amount")
     private Double totalAmount;
+
+    @Column(name = "shipping_fee")
+    private Double shippingFee;
 
     @Column(name = "payment_url", length = 1024)
     private String paymentUrl;
@@ -101,4 +107,3 @@ public class SagaInstance {
     @Column(name = "updated_at", nullable = false)
     private LocalDateTime updatedAt;
 }
-

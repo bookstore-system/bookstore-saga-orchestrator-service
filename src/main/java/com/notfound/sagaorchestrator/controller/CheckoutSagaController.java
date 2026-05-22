@@ -21,6 +21,7 @@ public class CheckoutSagaController {
     @PostMapping
     public ResponseEntity<ApiResponse<CheckoutSagaResponse>> startCheckout(
             @RequestHeader(value = "X-User-Id", required = false) String userId,
+            @RequestHeader(value = "Authorization", required = false) String authorization,
             @Valid @RequestBody CheckoutRequest request
     ) {
         if (userId == null || userId.isBlank()) {
@@ -34,7 +35,7 @@ public class CheckoutSagaController {
                 .body(ApiResponse.<CheckoutSagaResponse>builder()
                         .code(1000)
                         .message("Checkout saga started")
-                        .result(checkoutSagaService.startCheckout(userId, request))
+                        .result(checkoutSagaService.startCheckout(userId, authorization, request))
                         .build());
     }
 
@@ -47,4 +48,3 @@ public class CheckoutSagaController {
                 .build());
     }
 }
-
