@@ -2,6 +2,8 @@ package com.notfound.sagaorchestrator.service.impl;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.notfound.sagaorchestrator.config.RoutingKeys;
+import com.notfound.sagaorchestrator.messaging.command.CreateOrderCommand;
+import com.notfound.sagaorchestrator.messaging.command.ReserveStockCommand;
 import com.notfound.sagaorchestrator.messaging.event.OrderCreatedEvent;
 import com.notfound.sagaorchestrator.messaging.event.PaymentCompletedEvent;
 import com.notfound.sagaorchestrator.messaging.event.SagaFailureEvent;
@@ -25,6 +27,7 @@ import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
@@ -57,12 +60,27 @@ class CheckoutSagaServiceImplTest {
         request.setPaymentMethod("COD");
         request.setBookIds(List.of("book-1"));
 
-        var response = service.startCheckout("user-1", request);
+        var response = service.startCheckout("user-1", "Bearer access-token", request);
 
         assertThat(response.getSagaId()).isNotNull();
         assertThat(response.getStatus()).isEqualTo(SagaStatus.STARTED);
         verify(sagaInstanceRepository).save(any(SagaInstance.class));
-        verify(sagaMessageProducer).sendCommand(eq(RoutingKeys.ORDER_CREATE_COMMAND), any());
+        ArgumentCaptor<CreateOrderCommand> commandCaptor = ArgumentCaptor.forClass(CreateOrderCommand.class);
+        verify(sagaMessageProducer).sendCommand(eq(RoutingKeys.ORDER_CREATE_COMMAND), commandCaptor.capture());
+        assertThat(commandCaptor.getValue().getAuthorization()).isEqualTo("Bearer access-token");
+    }
+
+    @Test
+    void startCheckout_withoutAuthorization_throwsBusinessException() {
+        CheckoutRequest request = new CheckoutRequest();
+        request.setAddressId("addr-1");
+        request.setPaymentMethod("COD");
+        request.setBookIds(List.of("book-1"));
+
+        assertThatThrownBy(() -> service.startCheckout("user-1", " ", request))
+                .isInstanceOf(com.notfound.sagaorchestrator.exception.BusinessException.class)
+                .hasMessageContaining("authorization");
+        verifyNoInteractions(sagaMessageProducer);
     }
 
     @Test
@@ -92,7 +110,9 @@ class CheckoutSagaServiceImplTest {
         service.handleOrderCreated(event);
 
         assertThat(saga.getStatus()).isEqualTo(SagaStatus.ORDER_CREATED);
-        verify(sagaMessageProducer).sendCommand(eq(RoutingKeys.BOOK_STOCK_RESERVE_COMMAND), any());
+        ArgumentCaptor<ReserveStockCommand> commandCaptor = ArgumentCaptor.forClass(ReserveStockCommand.class);
+        verify(sagaMessageProducer).sendCommand(eq(RoutingKeys.BOOK_STOCK_RESERVE_COMMAND), commandCaptor.capture());
+        assertThat(commandCaptor.getValue().getPayload()).containsKey("items");
     }
 
     @Test

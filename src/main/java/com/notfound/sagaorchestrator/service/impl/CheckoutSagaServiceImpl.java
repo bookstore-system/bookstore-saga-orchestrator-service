@@ -28,6 +28,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.Map;
 import java.util.Locale;
 import java.util.UUID;
 
@@ -47,7 +48,10 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
 
     @Override
     @Transactional
-    public CheckoutSagaResponse startCheckout(String userId, CheckoutRequest request) {
+    public CheckoutSagaResponse startCheckout(String userId, String authorization, CheckoutRequest request) {
+        if (authorization == null || authorization.isBlank()) {
+            throw new BusinessException("authorization is required");
+        }
         validatePaymentMethod(request.getPaymentMethod());
 
         UUID sagaId = UUID.randomUUID();
@@ -71,6 +75,7 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
                 .type(RoutingKeys.ORDER_CREATE_COMMAND)
                 .occurredAt(LocalDateTime.now())
                 .userId(userId)
+                .authorization(authorization)
                 .addressId(request.getAddressId())
                 .paymentMethod(saga.getPaymentMethod())
                 .note(request.getNote())
@@ -119,6 +124,7 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
                 .orderId(saga.getOrderId())
                 .userId(saga.getUserId())
                 .items(event.getItems())
+                .payload(Map.of("items", event.getItems()))
                 .build();
         sagaMessageProducer.sendCommand(RoutingKeys.BOOK_STOCK_RESERVE_COMMAND, command);
         logStep(saga.getSagaId(), "BOOK_STOCK_RESERVE_COMMAND", "SENT", command.getEventId(), null);
@@ -147,6 +153,11 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
                     .userId(saga.getUserId())
                     .promotionCode(saga.getDiscountCode())
                     .orderTotalBeforeDiscount(saga.getTotalAmount())
+                    .payload(Map.of(
+                            "code", saga.getDiscountCode(),
+                            "promotionCode", saga.getDiscountCode(),
+                            "orderTotalBeforeDiscount", saga.getTotalAmount()
+                    ))
                     .build();
             sagaMessageProducer.sendCommand(RoutingKeys.PROMOTION_RESERVE_COMMAND, command);
             logStep(saga.getSagaId(), "PROMOTION_RESERVE_COMMAND", "SENT", command.getEventId(), null);
@@ -163,8 +174,13 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
         if (saga.getStatus() != SagaStatus.STOCK_RESERVED) return;
 
         saga.setStatus(SagaStatus.PROMOTION_RESERVED);
-        if (event.getFinalTotal() != null) {
-            saga.setTotalAmount(event.getFinalTotal());
+        Double discountAmount = resolvePromotionNumber(event, "discountAmount");
+        Double finalTotal = resolvePromotionNumber(event, "finalTotal");
+        if (discountAmount != null) {
+            saga.setDiscountAmount(discountAmount);
+        }
+        if (finalTotal != null) {
+            saga.setTotalAmount(finalTotal);
         }
         sagaInstanceRepository.save(saga);
         logStep(saga.getSagaId(), "PROMOTION_RESERVED", "DONE", event.getEventId(), null);
@@ -195,7 +211,11 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
         saga.setStatus(SagaStatus.PAYMENT_COMPLETED);
         sagaInstanceRepository.save(saga);
         logStep(saga.getSagaId(), "PAYMENT_COMPLETED", "DONE", event.getEventId(), null);
-        sendCreateShippingCommand(saga, event.getEventId());
+        if (saga.getShippingOrderCode() != null) {
+            sendConfirmOrderCommand(saga, event.getEventId());
+        } else {
+            sendCreateShippingCommand(saga, event.getEventId());
+        }
     }
 
     @Override
@@ -203,16 +223,32 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
     public void handleShippingCreated(ShippingCreatedEvent event) {
         if (!markProcessed(event)) return;
         SagaInstance saga = findSaga(event.getSagaId());
-        if (saga.getStatus() != SagaStatus.PAYMENT_COMPLETED
+        if (saga.getStatus() != SagaStatus.STOCK_RESERVED
+                && saga.getStatus() != SagaStatus.PROMOTION_RESERVED
+                && saga.getStatus() != SagaStatus.PAYMENT_COMPLETED
                 && saga.getStatus() != SagaStatus.PAYMENT_SKIPPED) {
             return;
         }
 
-        saga.setShippingOrderCode(event.getShippingOrderCode());
+        saga.setShippingOrderCode(resolveShippingOrderCode(event));
+        Double shippingFee = resolveShippingFee(event);
+        if (shippingFee != null && saga.getShippingFee() == null) {
+            saga.setShippingFee(shippingFee);
+            saga.setTotalAmount((saga.getTotalAmount() == null ? 0D : saga.getTotalAmount()) + shippingFee);
+        }
+        if (isOnlinePayment(saga)
+                && (saga.getStatus() == SagaStatus.STOCK_RESERVED || saga.getStatus() == SagaStatus.PROMOTION_RESERVED)) {
+            saga.setStatus(SagaStatus.PAYMENT_PENDING);
+            sagaInstanceRepository.save(saga);
+            logStep(saga.getSagaId(), "SHIPPING_CREATED", "DONE", event.getEventId(), null);
+            sendCreatePaymentCommand(saga, event.getEventId());
+            return;
+        }
+
         saga.setStatus(SagaStatus.SHIPPING_CREATED);
         sagaInstanceRepository.save(saga);
         logStep(saga.getSagaId(), "SHIPPING_CREATED", "DONE", event.getEventId(), null);
-        sendSimpleCommand(saga, event.getEventId(), RoutingKeys.ORDER_CONFIRM_COMMAND, "ORDER_CONFIRM_COMMAND");
+        sendConfirmOrderCommand(saga, event.getEventId());
     }
 
     @Override
@@ -220,7 +256,10 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
     public void handleOrderConfirmed(BaseSagaMessage event) {
         if (!markProcessed(event)) return;
         SagaInstance saga = findSaga(event.getSagaId());
-        if (saga.getStatus() != SagaStatus.SHIPPING_CREATED) return;
+        if (saga.getStatus() != SagaStatus.SHIPPING_CREATED
+                && !(saga.getStatus() == SagaStatus.PAYMENT_COMPLETED && saga.getShippingOrderCode() != null)) {
+            return;
+        }
 
         saga.setStatus(SagaStatus.ORDER_CONFIRMED);
         sagaInstanceRepository.save(saga);
@@ -283,7 +322,7 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
     public void handleFailure(SagaFailureEvent event) {
         if (!markProcessed(event)) return;
         SagaInstance saga = findSaga(event.getSagaId());
-        beginCompensation(saga, event.getReason(), event.getEventId());
+        beginCompensation(saga, resolveFailureReason(event), event.getEventId());
     }
 
     @Override
@@ -329,23 +368,7 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
 
     private void continueAfterPromotion(SagaInstance saga, UUID causationId) {
         if (isOnlinePayment(saga)) {
-            saga.setStatus(SagaStatus.PAYMENT_PENDING);
-            sagaInstanceRepository.save(saga);
-            CreatePaymentCommand command = CreatePaymentCommand.builder()
-                    .eventId(UUID.randomUUID())
-                    .sagaId(saga.getSagaId())
-                    .correlationId(saga.getSagaId())
-                    .causationId(causationId)
-                    .type(RoutingKeys.PAYMENT_CREATE_COMMAND)
-                    .occurredAt(LocalDateTime.now())
-                    .orderId(saga.getOrderId())
-                    .userId(saga.getUserId())
-                    .amount(saga.getTotalAmount())
-                    .paymentMethod(saga.getPaymentMethod())
-                    .redirectUrl(saga.getRedirectUrl())
-                    .build();
-            sagaMessageProducer.sendCommand(RoutingKeys.PAYMENT_CREATE_COMMAND, command);
-            logStep(saga.getSagaId(), "PAYMENT_CREATE_COMMAND", "SENT", command.getEventId(), null);
+            sendCreateShippingCommand(saga, causationId);
         } else {
             saga.setStatus(SagaStatus.PAYMENT_SKIPPED);
             sagaInstanceRepository.save(saga);
@@ -353,7 +376,26 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
         }
     }
 
+    private void sendCreatePaymentCommand(SagaInstance saga, UUID causationId) {
+        CreatePaymentCommand command = CreatePaymentCommand.builder()
+                .eventId(UUID.randomUUID())
+                .sagaId(saga.getSagaId())
+                .correlationId(saga.getSagaId())
+                .causationId(causationId)
+                .type(RoutingKeys.PAYMENT_CREATE_COMMAND)
+                .occurredAt(LocalDateTime.now())
+                .orderId(saga.getOrderId())
+                .userId(saga.getUserId())
+                .amount(saga.getTotalAmount())
+                .paymentMethod(saga.getPaymentMethod())
+                .redirectUrl(saga.getRedirectUrl())
+                .build();
+        sagaMessageProducer.sendCommand(RoutingKeys.PAYMENT_CREATE_COMMAND, command);
+        logStep(saga.getSagaId(), "PAYMENT_CREATE_COMMAND", "SENT", command.getEventId(), null);
+    }
+
     private void sendCreateShippingCommand(SagaInstance saga, UUID causationId) {
+        Double expectedShippingFee = resolveExpectedShippingFee(saga);
         CreateShippingCommand command = CreateShippingCommand.builder()
                 .eventId(UUID.randomUUID())
                 .sagaId(saga.getSagaId())
@@ -370,7 +412,21 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
                 .shippingDistrict(saga.getShippingDistrict())
                 .shippingWard(saga.getShippingWard())
                 .shippingNote(saga.getShippingNote())
-                .codAmount(isOnlinePayment(saga) ? 0D : saga.getTotalAmount())
+                .codAmount(isOnlinePayment(saga) ? 0D : saga.getTotalAmount() + (expectedShippingFee == null ? 0D : expectedShippingFee))
+                .expectedShippingFee(expectedShippingFee)
+                .payload(Map.ofEntries(
+                        Map.entry("toName", nullToEmpty(saga.getRecipientName())),
+                        Map.entry("toPhone", nullToEmpty(saga.getRecipientPhone())),
+                        Map.entry("toAddress", nullToEmpty(saga.getShippingAddress())),
+                        Map.entry("toProvinceName", nullToEmpty(saga.getShippingProvince())),
+                        Map.entry("toDistrictName", nullToEmpty(saga.getShippingDistrict())),
+                        Map.entry("toWardName", nullToEmpty(saga.getShippingWard())),
+                        Map.entry("note", nullToEmpty(saga.getShippingNote())),
+                        Map.entry("codAmount", isOnlinePayment(saga) ? 0 : (int) Math.round(saga.getTotalAmount() + (expectedShippingFee == null ? 0D : expectedShippingFee))),
+                        Map.entry("expectedShippingFee", expectedShippingFee == null ? 0D : expectedShippingFee),
+                        Map.entry("content", "Bookstore order " + saga.getOrderId()),
+                        Map.entry("clientOrderCode", saga.getOrderId().toString())
+                ))
                 .build();
         sagaMessageProducer.sendCommand(RoutingKeys.SHIPPING_CREATE_COMMAND, command);
         logStep(saga.getSagaId(), "SHIPPING_CREATE_COMMAND", "SENT", command.getEventId(), null);
@@ -417,7 +473,7 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
     }
 
     private CompensationStage firstCompensationStage(SagaInstance saga, SagaStatus previousStatus) {
-        if (previousStatus.ordinal() >= SagaStatus.SHIPPING_CREATED.ordinal() && saga.getShippingOrderCode() != null) {
+        if (saga.getShippingOrderCode() != null) {
             return CompensationStage.CANCEL_SHIPPING;
         }
         if (previousStatus.ordinal() >= SagaStatus.PAYMENT_COMPLETED.ordinal() && saga.getPaymentId() != null) {
@@ -475,6 +531,106 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
                 buildSimpleEvent(saga, RoutingKeys.CHECKOUT_FAILED, causationId)
         );
         logStep(saga.getSagaId(), "CHECKOUT_FAILED", "DONE", causationId, reason);
+    }
+
+    private String resolveFailureReason(SagaFailureEvent event) {
+        if (event.getReason() != null && !event.getReason().isBlank()) {
+            return event.getReason();
+        }
+        if (event.getPayload() != null) {
+            Object reason = event.getPayload().get("reason");
+            if (reason != null && !reason.toString().isBlank()) {
+                return reason.toString();
+            }
+        }
+        return event.getType() + " failed";
+    }
+
+    private String resolveShippingOrderCode(ShippingCreatedEvent event) {
+        if (event.getShippingOrderCode() != null && !event.getShippingOrderCode().isBlank()) {
+            return event.getShippingOrderCode();
+        }
+        if (event.getPayload() != null) {
+            Object shippingOrderCode = event.getPayload().get("shippingOrderCode");
+            if (shippingOrderCode != null && !shippingOrderCode.toString().isBlank()) {
+                return shippingOrderCode.toString();
+            }
+        }
+        return null;
+    }
+
+    private Double resolveExpectedShippingFee(SagaInstance saga) {
+        if (saga.getPayloadJson() == null || saga.getPayloadJson().isBlank()) {
+            return null;
+        }
+        try {
+            CheckoutRequest request = objectMapper.readValue(saga.getPayloadJson(), CheckoutRequest.class);
+            Double fee = request.getShippingFee();
+            return fee != null && fee > 0 ? fee : null;
+        } catch (Exception ignored) {
+            return null;
+        }
+    }
+
+    private Double resolveShippingFee(ShippingCreatedEvent event) {
+        if (event.getTotalFee() != null) {
+            return event.getTotalFee();
+        }
+        Object value = event.getPayload() != null ? event.getPayload().get("totalFee") : null;
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value != null && !value.toString().isBlank()) {
+            try {
+                return Double.parseDouble(value.toString());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private Double resolvePromotionNumber(PromotionReservedEvent event, String fieldName) {
+        Double topLevelValue = switch (fieldName) {
+            case "discountAmount" -> event.getDiscountAmount();
+            case "finalTotal" -> event.getFinalTotal();
+            default -> null;
+        };
+        if (topLevelValue != null) {
+            return topLevelValue;
+        }
+        Object value = event.getPayload() != null ? event.getPayload().get(fieldName) : null;
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value != null && !value.toString().isBlank()) {
+            try {
+                return Double.parseDouble(value.toString());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private void sendConfirmOrderCommand(SagaInstance saga, UUID causationId) {
+        ConfirmOrderCommand command = ConfirmOrderCommand.builder()
+                .eventId(UUID.randomUUID())
+                .sagaId(saga.getSagaId())
+                .correlationId(saga.getSagaId())
+                .causationId(causationId)
+                .type(RoutingKeys.ORDER_CONFIRM_COMMAND)
+                .occurredAt(LocalDateTime.now())
+                .orderId(saga.getOrderId())
+                .userId(saga.getUserId())
+                .totalAmount(saga.getTotalAmount())
+                .discountAmount(saga.getDiscountAmount())
+                .shippingFee(saga.getShippingFee())
+                .paymentId(saga.getPaymentId())
+                .shippingOrderCode(saga.getShippingOrderCode())
+                .build();
+        sagaMessageProducer.sendCommand(RoutingKeys.ORDER_CONFIRM_COMMAND, command);
+        logStep(saga.getSagaId(), "ORDER_CONFIRM_COMMAND", "SENT", command.getEventId(), null);
     }
 
     private void sendSimpleCommand(SagaInstance saga, UUID causationId, String routingKey, String stepName) {
@@ -577,9 +733,15 @@ public class CheckoutSagaServiceImpl implements CheckoutSagaService {
         return value == null || value.isBlank() ? null : value.trim();
     }
 
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
     private String writePayload(CheckoutRequest request) {
         try {
-            return objectMapper.writeValueAsString(request);
+            return objectMapper.writeValueAsString(Map.of(
+                    "shippingFee", request.getShippingFee() == null ? 0D : request.getShippingFee()
+            ));
         } catch (JsonProcessingException e) {
             throw new BusinessException("Unable to serialize checkout request");
         }
