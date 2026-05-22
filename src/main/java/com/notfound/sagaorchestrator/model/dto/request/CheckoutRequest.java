@@ -18,8 +18,8 @@ public class CheckoutRequest {
     private String note;
     private String discountCode;
     private String redirectUrl;
+    private Double shippingFee;
 
     @NotEmpty
     private List<String> bookIds;
 }
-
