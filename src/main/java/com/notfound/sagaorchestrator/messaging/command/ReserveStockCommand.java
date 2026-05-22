@@ -15,4 +15,3 @@ import java.util.List;
 public class ReserveStockCommand extends BaseSagaMessage {
     private List<StockItemPayload> items;
 }
-
