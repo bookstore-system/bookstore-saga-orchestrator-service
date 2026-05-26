@@ -15,24 +15,79 @@ spec:
         app: saga-orchestrator-service
     spec:
       containers:
-        - name: saga-orchestrator-service
-          image: truongikpk/bookstore-saga-orchestrator-service:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 8080
-          env:
-            - name: SPRING_PROFILES_ACTIVE
-              value: "prod"
-            - name: DB_HOST
-              value: "saga-db"
-            - name: DB_PORT
-              value: "3306"
-            - name: DB_NAME
-              value: "bookstore_saga"
-            - name: DB_USERNAME
-              value: "bookstore"
-            - name: DB_PASSWORD
-              value: "bookstore"
-            - name: RABBITMQ_HOST
-              value: "rabbitmq"
-
+      - name: saga-orchestrator-service
+        image: truongdocker1/bookstore-saga-orchestrator-service:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SPRING_PROFILES_ACTIVE
+          value: "prod"
+        - name: DB_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: saga-orchestrator-service-config
+              key: DB_HOST
+        - name: DB_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: saga-orchestrator-service-config
+              key: DB_PORT
+        - name: DB_NAME
+          valueFrom:
+            configMapKeyRef:
+              name: saga-orchestrator-service-config
+              key: DB_NAME
+        - name: RABBITMQ_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: saga-orchestrator-service-config
+              key: RABBITMQ_HOST
+        - name: RABBITMQ_PORT
+          valueFrom:
+            configMapKeyRef:
+              name: saga-orchestrator-service-config
+              key: RABBITMQ_PORT
+        - name: RABBITMQ_VIRTUAL_HOST
+          valueFrom:
+            configMapKeyRef:
+              name: saga-orchestrator-service-config
+              key: RABBITMQ_VIRTUAL_HOST
+        - name: DB_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: saga-orchestrator-service-secret
+              key: DB_USERNAME
+        - name: DB_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: saga-orchestrator-service-secret
+              key: DB_PASSWORD
+        - name: RABBITMQ_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: saga-orchestrator-service-secret
+              key: RABBITMQ_USERNAME
+        - name: RABBITMQ_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: saga-orchestrator-service-secret
+              key: RABBITMQ_PASSWORD
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 20
+          periodSeconds: 10
+          failureThreshold: 6
+        livenessProbe:
+          tcpSocket:
+            port: 8080
+          initialDelaySeconds: 60
+          periodSeconds: 30
