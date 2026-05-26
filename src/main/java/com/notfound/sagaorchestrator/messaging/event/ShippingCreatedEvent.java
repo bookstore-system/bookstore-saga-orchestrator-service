@@ -11,5 +11,7 @@ import lombok.experimental.SuperBuilder;
 @EqualsAndHashCode(callSuper = true)
 public class ShippingCreatedEvent extends BaseSagaMessage {
     private String shippingOrderCode;
+    private Double totalFee;
+    private String expectedDeliveryTime;
+    private Integer codAmount;
 }
-

@@ -31,7 +31,4 @@ build/
 
 ### VS Code ###
 .vscode/
-
-# Ignore secret files
-k8s/secret.yaml
 .env

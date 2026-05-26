@@ -48,11 +48,12 @@ class CheckoutSagaControllerTest {
         request.setBookIds(List.of("book-1"));
 
         UUID sagaId = UUID.randomUUID();
-        when(checkoutSagaService.startCheckout(eq("user-1"), any()))
+        when(checkoutSagaService.startCheckout(eq("user-1"), eq("Bearer access-token"), any()))
                 .thenReturn(CheckoutSagaResponse.builder().sagaId(sagaId).status(SagaStatus.STARTED).build());
 
         mockMvc.perform(post("/api/v1/checkout")
                         .header("X-User-Id", "user-1")
+                        .header("Authorization", "Bearer access-token")
                         .contentType(MediaType.APPLICATION_JSON)
                         .content(objectMapper.writeValueAsString(request)))
                 .andExpect(status().isAccepted())
@@ -73,4 +74,3 @@ class CheckoutSagaControllerTest {
                 .andExpect(status().isUnauthorized());
     }
 }
-

@@ -18,5 +18,5 @@ public class CreateShippingCommand extends BaseSagaMessage {
     private String shippingWard;
     private String shippingNote;
     private Double codAmount;
+    private Double expectedShippingFee;
 }
-

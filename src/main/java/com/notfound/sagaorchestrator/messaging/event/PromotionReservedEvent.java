@@ -10,6 +10,6 @@ import lombok.experimental.SuperBuilder;
 @AllArgsConstructor
 @EqualsAndHashCode(callSuper = true)
 public class PromotionReservedEvent extends BaseSagaMessage {
+    private Double discountAmount;
     private Double finalTotal;
 }
-
